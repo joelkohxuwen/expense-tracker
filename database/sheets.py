@@ -54,16 +54,26 @@ def _get_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 
+def _get_client_email() -> str:
+    """Return the service account email for helpful error messages."""
+    try:
+        return json.loads(GOOGLE_SHEETS_CREDENTIALS).get("client_email", "")
+    except Exception:
+        return ""
+
+
 def _get_spreadsheet() -> gspread.Spreadsheet:
     client = _get_client()
     try:
         return client.open(SPREADSHEET_NAME)
     except gspread.exceptions.SpreadsheetNotFound:
-        # Sheet not shared with service account yet — create a new one.
-        # The user can either share their existing sheet (then delete this one)
-        # or use the auto-created sheet.
-        print(f"[sheets] '{SPREADSHEET_NAME}' not found — creating a new spreadsheet.")
-        return client.create(SPREADSHEET_NAME)
+        svc_email = _get_client_email()
+        raise RuntimeError(
+            f"Spreadsheet '{SPREADSHEET_NAME}' is not accessible to the service account.\n"
+            f"Please share it with: {svc_email}\n"
+            f"  1. Open your '{SPREADSHEET_NAME}' Google Sheet\n"
+            f"  2. Click Share → paste the email above → set role to Editor → Send"
+        ) from None
 
 
 def _rows_to_dicts(rows: list[list]) -> list[dict]:

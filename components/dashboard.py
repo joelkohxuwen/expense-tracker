@@ -42,15 +42,22 @@ def Dashboard(user: dict, on_navigate):
     categories, set_categories = hooks.use_state([])
     show_form, set_show_form = hooks.use_state(False)
     loading, set_loading = hooks.use_state(True)
+    sheets_error, set_sheets_error = hooks.use_state("")
     refresh_key, set_refresh_key = hooks.use_state(0)  # bump to trigger a reload
 
     @hooks.use_effect(dependencies=[refresh_key])
     async def load_data():
         set_loading(True)
-        all_exp = await get_expenses(user_email=None)   # all users for shared view
-        cats = await get_categories()
-        set_expenses(all_exp)
-        set_categories(cats)
+        set_sheets_error("")
+        try:
+            all_exp = await get_expenses(user_email=None)
+            cats = await get_categories()
+            set_expenses(all_exp)
+            set_categories(cats)
+        except Exception as exc:
+            set_sheets_error(str(exc))
+            set_expenses([])
+            set_categories([])
         set_loading(False)
 
     async def handle_save(expense: dict):
@@ -91,6 +98,27 @@ def Dashboard(user: dict, on_navigate):
 
     # ---- Render -------------------------------------------------------------
     return html.div(
+        # Sheets error banner — shown when the spreadsheet isn't accessible yet
+        html.div(
+            {
+                "class": "alert alert-danger d-flex align-items-start gap-3 mb-4",
+                "style": {"display": "none" if not sheets_error else "flex"},
+            },
+            html.i({"class": "bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"}),
+            html.div(
+                html.strong("Google Sheets not accessible. "),
+                "Share your ",
+                html.strong("\"Expense Logs\""),
+                " spreadsheet with the service account email and reload.",
+                html.br(),
+                html.code(
+                    {"style": {"fontSize": "0.8rem", "wordBreak": "break-all"}},
+                    "expense-tracker-sheets@claude-code-497312.iam.gserviceaccount.com",
+                ),
+                html.br(),
+                html.small({"class": "text-muted"}, sheets_error),
+            ),
+        ) if sheets_error else html.div(),
         # Header row
         html.div(
             {"class": "d-flex justify-content-between align-items-center mb-4"},

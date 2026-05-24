@@ -101,11 +101,26 @@ async def auth_callback(request: Request):
         if not user_info:
             raise ValueError("No userinfo in token response")
 
-        user = await get_or_create_user(
-            email=user_info["email"],
-            name=user_info.get("name", ""),
-            picture=user_info.get("picture", ""),
-        )
+        # Build a user dict directly from the Google token — no Sheets call
+        # needed here, so a misconfigured sheet never blocks sign-in.
+        user = {
+            "email":   user_info["email"],
+            "name":    user_info.get("name", ""),
+            "picture": user_info.get("picture", ""),
+            "role":    "user",   # will be promoted to admin on first Sheets write
+        }
+
+        # Best-effort: register the user in Sheets. If Sheets isn't accessible
+        # yet (sheet not shared) we still let the user in — they'll see a
+        # helpful error banner on the dashboard instead of a sign-in failure.
+        try:
+            user = await get_or_create_user(
+                email=user["email"],
+                name=user["name"],
+                picture=user["picture"],
+            )
+        except Exception as sheets_err:
+            print(f"[auth] Sheets registration skipped: {sheets_err}")
 
         session_token = create_session_token(user)
 
@@ -113,16 +128,15 @@ async def auth_callback(request: Request):
         response.set_cookie(
             key="session_token",
             value=session_token,
-            httponly=True,         # not readable by JavaScript
-            secure=not DEBUG,      # require HTTPS in production
+            httponly=True,
+            secure=not DEBUG,
             samesite="lax",
             max_age=7 * 24 * 3600,
         )
         return response
 
     except Exception as exc:
-        # Surface the error on the login page without leaking internals
-        short = str(exc)[:80].replace("&", "%26")
+        short = str(exc)[:120].replace("&", "%26").replace(" ", "%20")
         return RedirectResponse(url=f"/?error={short}", status_code=302)
 
 
