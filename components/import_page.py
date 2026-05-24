@@ -95,7 +95,7 @@ def _UploadTabs(user: dict):
         # CC Statement tab
         html.div(
             {"style": {"display": "block" if active_tab == "cc" else "none"}},
-            _CcUploadPanel(),
+            _CcUploadPanel(user=user),
         ),
 
         # Flat file tab
@@ -107,51 +107,175 @@ def _UploadTabs(user: dict):
 
 
 @component
-def _CcUploadPanel():
-    """Original CC statement CSV upload form."""
+def _CcUploadPanel(user: dict):
+    """
+    CC statement upload form.
+
+    Supports both CSV and PDF files.  When a PDF is selected, a cardholder
+    mapping section appears so the user can link each cardholder name (as it
+    appears in the PDF) to a family member's email address.  This is needed
+    for UOB consolidated statements that cover multiple cards.  Citi individual
+    PDFs can leave the mapping empty — all transactions default to the
+    uploading user.
+    """
+    is_pdf,      set_is_pdf      = hooks.use_state(False)
+    # Each entry: {"name": str, "email": str}
+    cardholders, set_cardholders = hooks.use_state([
+        {"name": (user.get("name") or "").upper(), "email": user.get("email", "")}
+    ])
+
+    def on_file_change(e):
+        val = (e["target"]["value"] or "").lower()
+        set_is_pdf(val.endswith(".pdf"))
+
+    def add_cardholder(_event):
+        set_cardholders([*cardholders, {"name": "", "email": ""}])
+
+    def remove_cardholder(idx: int, _event):
+        if len(cardholders) > 1:
+            set_cardholders([c for i, c in enumerate(cardholders) if i != idx])
+
+    def update_name(idx: int, val: str):
+        updated = [dict(c) for c in cardholders]
+        updated[idx]["name"] = val.upper()
+        set_cardholders(updated)
+
+    def update_ch_email(idx: int, val: str):
+        updated = [dict(c) for c in cardholders]
+        updated[idx]["email"] = val
+        set_cardholders(updated)
+
+    cardholder_rows = [
+        html.div(
+            {"class": "row g-2 align-items-center mb-2", "key": str(idx)},
+            # Name as in PDF (all caps)
+            html.div(
+                {"class": "col"},
+                html.input({
+                    "type":        "text",
+                    "name":        f"ch_name_{idx}",
+                    "value":       ch["name"],
+                    "placeholder": "FULL NAME AS IN PDF",
+                    "class":       "form-control form-control-sm",
+                    "style":       {"textTransform": "uppercase"},
+                    "onChange":    lambda e, i=idx: update_name(i, e["target"]["value"]),
+                }),
+            ),
+            html.div({"class": "col-auto"}, html.span({"class": "text-muted"}, "→")),
+            # Email
+            html.div(
+                {"class": "col"},
+                html.input({
+                    "type":        "email",
+                    "name":        f"ch_email_{idx}",
+                    "value":       ch["email"],
+                    "placeholder": "person@email.com",
+                    "class":       "form-control form-control-sm",
+                    "onChange":    lambda e, i=idx: update_ch_email(i, e["target"]["value"]),
+                }),
+            ),
+            # Remove button
+            html.div(
+                {"class": "col-auto"},
+                html.button(
+                    {
+                        "type":     "button",
+                        "class":    "btn btn-sm btn-outline-danger",
+                        "onClick":  lambda e, i=idx: remove_cardholder(i, e),
+                        "disabled": len(cardholders) <= 1,
+                        "title":    "Remove",
+                    },
+                    html.i({"class": "bi bi-x-lg"}),
+                ),
+            ),
+        )
+        for idx, ch in enumerate(cardholders)
+    ]
+
     return html.div(
         html.div(
             {"class": "row justify-content-center"},
             html.div(
-                {"class": "col-lg-7"},
+                {"class": "col-lg-8"},
                 html.p(
                     {"class": "text-muted mb-4"},
-                    "Upload a CSV export from your bank. Supported: Chase, "
-                    "Bank of America, Citi, Capital One, DBS, OCBC, UOB, and most generic CSV formats.",
+                    "Upload a bank statement in ",
+                    html.strong("CSV"),
+                    " or ",
+                    html.strong("PDF"),
+                    " format.  Supported: UOB consolidated PDF, Citi individual PDF, "
+                    "DBS/POSB CSV, OCBC CSV, Chase CSV, and most generic CSV formats.",
                 ),
                 html.div(
                     {"class": "card border-0 shadow-sm"},
                     html.div(
                         {"class": "card-body p-4"},
-                        # Traditional multipart form — navigates to FastAPI endpoint
                         html.form(
                             {
-                                "action": "/api/import-csv",
-                                "method": "post",
+                                "action":  "/api/import-csv",
+                                "method":  "post",
                                 "enctype": "multipart/form-data",
                             },
+
+                            # ---- File picker ----
                             html.div(
-                                {"class": "mb-3"},
+                                {"class": "mb-4"},
                                 html.label(
-                                    {"class": "form-label fw-semibold", "for": "csv-file"},
-                                    "Select CSV file",
+                                    {"class": "form-label fw-semibold", "for": "cc-file"},
+                                    "Select statement file (.csv or .pdf)",
                                 ),
                                 html.input({
-                                    "id": "csv-file",
-                                    "type": "file",
-                                    "name": "file",
-                                    "accept": ".csv,text/csv",
-                                    "class": "form-control form-control-lg",
+                                    "id":       "cc-file",
+                                    "type":     "file",
+                                    "name":     "file",
+                                    "accept":   ".csv,.pdf,text/csv,application/pdf",
+                                    "class":    "form-control form-control-lg",
                                     "required": True,
+                                    "onChange": on_file_change,
                                 }),
                                 html.div(
                                     {"class": "form-text"},
-                                    "Export instructions: ",
-                                    html.strong("Chase"), " — Account Activity → Download → CSV  |  ",
-                                    html.strong("DBS/POSB"), " — Card Transactions → Download  |  ",
-                                    html.strong("OCBC"), " — Account Statement → Export CSV",
+                                    html.strong("PDF: "),
+                                    "UOB consolidated or Citi individual statement.  ",
+                                    html.strong("CSV: "),
+                                    "DBS/POSB — Card Transactions → Download  |  "
+                                    "OCBC — Account Statement → Export CSV",
                                 ),
                             ),
+
+                            # ---- Cardholder mapping (PDF only) ----
+                            html.div(
+                                {
+                                    "class": "mb-4",
+                                    "style": {"display": "block" if is_pdf else "none"},
+                                },
+                                html.div(
+                                    {"class": "d-flex justify-content-between align-items-center mb-2"},
+                                    html.div(
+                                        html.h6(
+                                            {"class": "fw-semibold mb-0"},
+                                            html.i({"class": "bi bi-person-badge me-2"}),
+                                            "Cardholder name mapping",
+                                        ),
+                                        html.div(
+                                            {"class": "form-text mt-0"},
+                                            "Enter each name exactly as it appears in the PDF "
+                                            "(all caps).  Leave blank for Citi — only your account is imported.",
+                                        ),
+                                    ),
+                                    html.button(
+                                        {
+                                            "type":    "button",
+                                            "class":   "btn btn-sm btn-outline-primary ms-3 flex-shrink-0",
+                                            "onClick": add_cardholder,
+                                        },
+                                        html.i({"class": "bi bi-plus-circle me-1"}),
+                                        "Add cardholder",
+                                    ),
+                                ),
+                                *cardholder_rows,
+                            ),
+
                             html.button(
                                 {"type": "submit", "class": "btn btn-primary btn-lg w-100"},
                                 html.i({"class": "bi bi-cloud-upload me-2"}),

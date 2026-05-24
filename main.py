@@ -15,7 +15,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -30,6 +30,7 @@ from database.sheets import ensure_sheets, get_expenses, get_or_create_user
 from utils.csv_parser import parse_csv
 from utils.deduplicator import find_duplicates
 from utils.flat_file_parser import parse_flat_file
+from utils.pdf_parser import parse_pdf
 
 # ---------------------------------------------------------------------------
 # Shared in-memory store for pending CSV import sessions.
@@ -154,25 +155,56 @@ async def logout():
 # ---------------------------------------------------------------------------
 
 @app.post("/api/import-csv")
-async def import_csv_endpoint(request: Request, file: UploadFile = File(...)):
+async def import_csv_endpoint(request: Request):
     """
-    Receive a credit card statement CSV, parse it, run duplicate detection,
-    and store the result in import_sessions. Then redirect back to the
-    ReactPy app's import review page.
+    Receive a credit card statement file (CSV or PDF), parse it, run duplicate
+    detection, and store the result in import_sessions before redirecting to
+    the ReactPy review page.
 
-    The ReactPy ImportPage component reads import_sessions[import_id] directly
-    (server-side), so no separate GET API is needed to retrieve the data.
+    For PDF uploads extra form fields supply cardholder → email mappings:
+        ch_name_0, ch_email_0, ch_name_1, ch_email_1, …
+    These are used by the UOB consolidated parser to route each card's
+    transactions to the correct user.  Citi individual PDFs ignore them and
+    assign all transactions to the uploading user.
     """
     user = get_user_from_request(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    raw_bytes = await file.read()
-    text = raw_bytes.decode("utf-8", errors="replace")
+    form = await request.form()
 
-    transactions = parse_csv(text)
+    file_field = form.get("file")
+    if file_field is None or not hasattr(file_field, "read"):
+        return RedirectResponse(url="/?page=import&error=no_file", status_code=302)
+
+    raw_bytes = await file_field.read()
+    filename: str = getattr(file_field, "filename", None) or "uploaded.csv"
+    is_pdf = filename.lower().endswith(".pdf")
+
+    # Build cardholder map from dynamic ch_name_N / ch_email_N form fields
+    cardholder_map: dict[str, str] = {}
+    for i in range(20):
+        ch_name  = str(form.get(f"ch_name_{i}",  "")).strip()
+        ch_email = str(form.get(f"ch_email_{i}", "")).strip()
+        if not ch_name and not ch_email:
+            break
+        if ch_name:
+            cardholder_map[ch_name] = ch_email or user["email"]
+
+    # Parse depending on file type
+    if is_pdf:
+        transactions = parse_pdf(raw_bytes, cardholder_map, user["email"])
+    else:
+        text = raw_bytes.decode("utf-8", errors="replace")
+        transactions = parse_csv(text)
+
     if not transactions:
         return RedirectResponse(url="/?page=import&error=parse_failed", status_code=302)
+
+    # Ensure user_email is set (CSV parser doesn't set it; PDF parser does)
+    for tx in transactions:
+        if not tx.get("user_email"):
+            tx["user_email"] = user["email"]
 
     # Run deduplication against all existing expenses (all users share the sheet)
     existing = await get_expenses(user_email=None)
@@ -198,7 +230,7 @@ async def import_csv_endpoint(request: Request, file: UploadFile = File(...)):
     import_sessions[import_id] = {
         "transactions": transactions,
         "user_email": user["email"],
-        "filename": file.filename or "uploaded.csv",
+        "filename": filename,
     }
 
     return RedirectResponse(

@@ -10,6 +10,7 @@ mount to fetch real data from Google Sheets and trigger a re-render.
 """
 import hashlib
 import json
+import statistics
 from collections import defaultdict
 from datetime import datetime
 
@@ -162,11 +163,32 @@ def MonthlyChart(expenses: list, users: list):
     if not datasets:
         return html.div()
 
+    # ---- Y-axis cap: if one month is a big outlier, cap the axis so the
+    # smaller months remain readable.  Cap = 2× median rounded up to next $500.
+    monthly_totals = []
+    for ym in months_ym:
+        total = sum(
+            agg[em][ym].get(cat, 0.0)
+            for em in emails
+            for cat in (agg[em].get(ym) or {})
+        )
+        monthly_totals.append(total)
+
+    nonzero = [t for t in monthly_totals if t > 0]
+    y_max_js = "undefined"   # Chart.js will auto-scale when undefined
+    if len(nonzero) >= 2:
+        med = statistics.median(nonzero)
+        mx  = max(nonzero)
+        if mx > 2.2 * med and med > 0:
+            cap = int(2.0 * med / 500 + 1) * 500
+            y_max_js = str(cap)
+
     data_json = json.dumps({"labels": month_labels, "datasets": datasets})
     chart_id = "mc-" + hashlib.md5(data_json.encode()).hexdigest()[:8]
 
     # Inline JS — options written as real JS (not JSON) so we can use
     # function callbacks for tooltip/tick formatting.
+    y_max_opt = f",max:{y_max_js}" if y_max_js != "undefined" else ""
     script = (
         "(function(){"
         "var _t=0;"
@@ -185,7 +207,8 @@ def MonthlyChart(expenses: list, users: list):
         "},"
         "scales:{"
         "x:{stacked:true,grid:{display:false}},"
-        "y:{stacked:true,beginAtZero:true,ticks:{callback:function(v){return '$'+v.toLocaleString();}}}"
+        f"y:{{stacked:true,beginAtZero:true{y_max_opt},"
+        "ticks:{callback:function(v){return '$'+v.toLocaleString();}}}}"
         "}"
         "}"
         "});"
