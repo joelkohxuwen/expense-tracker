@@ -79,6 +79,10 @@ def App():
             "href": "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css",
         }),
         html.meta({"name": "viewport", "content": "width=device-width, initial-scale=1"}),
+        # Chart.js — loaded early so MonthlyChart's retry loop finds it quickly
+        html.script({
+            "src": "https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js",
+        }),
     ]
 
     # ---- Not authenticated: show full-page login screen --------------------

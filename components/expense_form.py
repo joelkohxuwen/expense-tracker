@@ -10,6 +10,16 @@ from datetime import datetime
 from reactpy import component, html, hooks
 
 
+def _default_category(categories: list, init_cat: str) -> str:
+    """Return the best default: use init_cat if set, else find the first food-like category."""
+    if init_cat:
+        return init_cat
+    for cat in (categories or []):
+        if "food" in cat.lower():
+            return cat
+    return "Food & Dining"
+
+
 @component
 def ExpenseForm(
     user_email: str,
@@ -39,7 +49,9 @@ def ExpenseForm(
     date, set_date = hooks.use_state(init.get("date", datetime.now().strftime("%Y-%m-%d")))
     amount, set_amount = hooks.use_state(init.get("amount", ""))
     description, set_description = hooks.use_state(init.get("description", ""))
-    category, set_category = hooks.use_state(init.get("category", "Other"))
+    category, set_category = hooks.use_state(
+        _default_category(categories or [], init.get("category", ""))
+    )
     notes, set_notes = hooks.use_state(init.get("notes", ""))
     error, set_error = hooks.use_state("")
     saving, set_saving = hooks.use_state(False)

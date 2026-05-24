@@ -70,7 +70,7 @@ def Navbar(user: dict, current_page: str, on_navigate):
                     {"class": "navbar-nav me-auto"},
                     nav_link("dashboard", "Dashboard", "speedometer2"),
                     nav_link("expenses", "Expenses", "list-ul"),
-                    nav_link("import", "Import CC Statement", "upload"),
+                    nav_link("import", "Import Expenses", "upload"),
                 ),
                 # User avatar + logout
                 html.div(

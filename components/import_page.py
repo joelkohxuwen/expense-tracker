@@ -14,7 +14,18 @@ ReactPy pattern: conditional rendering based on props + tab state.
 """
 from reactpy import component, html, hooks
 
-from database.sheets import add_expenses_bulk, delete_expense
+from database.sheets import add_expenses_bulk, delete_expense, get_all_users
+
+
+def _display_name(email: str, users: list) -> str:
+    """Return first name for an email, falling back to email prefix."""
+    for u in users:
+        if u.get("email") == email:
+            n = u.get("name", "").strip()
+            if n:
+                return n.split()[0]
+            break
+    return email.split("@")[0].capitalize()
 
 
 # The import_sessions dict is defined in main.py and injected here at import time.
@@ -167,11 +178,84 @@ def _FlatUploadPanel(user: dict):
     """
     Upload form for the custom pipe-delimited history file.
 
-    The user can map each person initial (J, E, …) to an email address.
-    The current logged-in user's email is pre-filled for the first initial.
+    Starts with one person row (the logged-in user pre-filled for the first
+    initial). The "Add person" button appends extra rows dynamically.
+    Form fields are named initial_0 / email_0, initial_1 / email_1, … so the
+    FastAPI endpoint can parse any number of mappings.
     """
-    initial_j, set_initial_j = hooks.use_state(user.get("email", ""))
-    initial_e, set_initial_e = hooks.use_state("")
+    # Each entry: {"initial": str, "email": str}
+    people, set_people = hooks.use_state([
+        {"initial": "J", "email": user.get("email", "")}
+    ])
+
+    def add_person(_event):
+        set_people([*people, {"initial": "", "email": ""}])
+
+    def remove_person(idx: int, _event):
+        if len(people) > 1:
+            set_people([p for i, p in enumerate(people) if i != idx])
+
+    def update_initial(idx: int, val: str):
+        updated = [dict(p) for p in people]
+        updated[idx]["initial"] = val.upper()[:3]
+        set_people(updated)
+
+    def update_email(idx: int, val: str):
+        updated = [dict(p) for p in people]
+        updated[idx]["email"] = val
+        set_people(updated)
+
+    person_rows = [
+        html.div(
+            {"class": "row g-2 align-items-center mb-2", "key": str(idx)},
+            # Initial box
+            html.div(
+                {"class": "col-auto"},
+                html.input({
+                    "type":        "text",
+                    "name":        f"initial_{idx}",
+                    "value":       p["initial"],
+                    "maxLength":   "3",
+                    "placeholder": "J",
+                    "class":       "form-control form-control-sm fw-bold text-center",
+                    "style":       {"width": "60px", "textTransform": "uppercase"},
+                    "onChange":    lambda e, i=idx: update_initial(i, e["target"]["value"]),
+                }),
+            ),
+            # Arrow label
+            html.div(
+                {"class": "col-auto"},
+                html.span({"class": "text-muted px-1"}, "→"),
+            ),
+            # Email input
+            html.div(
+                {"class": "col"},
+                html.input({
+                    "type":        "email",
+                    "name":        f"email_{idx}",
+                    "value":       p["email"],
+                    "placeholder": "person@email.com",
+                    "class":       "form-control form-control-sm",
+                    "onChange":    lambda e, i=idx: update_email(i, e["target"]["value"]),
+                }),
+            ),
+            # Remove button
+            html.div(
+                {"class": "col-auto"},
+                html.button(
+                    {
+                        "type":     "button",
+                        "class":    "btn btn-sm btn-outline-danger",
+                        "onClick":  lambda e, i=idx: remove_person(i, e),
+                        "disabled": len(people) <= 1,
+                        "title":    "Remove this person",
+                    },
+                    html.i({"class": "bi bi-x-lg"}),
+                ),
+            ),
+        )
+        for idx, p in enumerate(people)
+    ]
 
     return html.div(
         html.div(
@@ -198,59 +282,51 @@ def _FlatUploadPanel(user: dict):
                         {"class": "card-body p-4"},
                         html.form(
                             {
-                                "action": "/api/import-flat",
-                                "method": "post",
+                                "action":  "/api/import-flat",
+                                "method":  "post",
                                 "enctype": "multipart/form-data",
                             },
-                            # Person mapping
-                            html.h6({"class": "fw-semibold mb-3"},
-                                    html.i({"class": "bi bi-people me-2"}),
-                                    "Map person initials to email addresses"),
-                            html.div(
-                                {"class": "row g-3 mb-4"},
-                                html.div(
-                                    {"class": "col-md-6"},
-                                    html.label({"class": "form-label", "for": "initial-j"},
-                                               html.strong("J"), " is…"),
-                                    html.input({
-                                        "id": "initial-j",
-                                        "type": "email",
-                                        "name": "initial_j",
-                                        "class": "form-control",
-                                        "placeholder": "joel@gmail.com",
-                                        "value": initial_j,
-                                        "onChange": lambda e: set_initial_j(e["target"]["value"]),
-                                    }),
-                                ),
-                                html.div(
-                                    {"class": "col-md-6"},
-                                    html.label({"class": "form-label", "for": "initial-e"},
-                                               html.strong("E"), " is…"),
-                                    html.input({
-                                        "id": "initial-e",
-                                        "type": "email",
-                                        "name": "initial_e",
-                                        "class": "form-control",
-                                        "placeholder": "partner@gmail.com (leave blank to use 'e@family')",
-                                        "value": initial_e,
-                                        "onChange": lambda e: set_initial_e(e["target"]["value"]),
-                                    }),
-                                ),
-                            ),
-                            # File picker
+
+                            # ---- Person mapping section ----
                             html.div(
                                 {"class": "mb-4"},
-                                html.label({"class": "form-label fw-semibold", "for": "flat-file"},
-                                           "Select history file (.txt or .csv)"),
+                                html.div(
+                                    {"class": "d-flex justify-content-between align-items-center mb-3"},
+                                    html.h6(
+                                        {"class": "fw-semibold mb-0"},
+                                        html.i({"class": "bi bi-people me-2"}),
+                                        "Map person initials to email addresses",
+                                    ),
+                                    html.button(
+                                        {
+                                            "type":    "button",
+                                            "class":   "btn btn-sm btn-outline-primary",
+                                            "onClick": add_person,
+                                        },
+                                        html.i({"class": "bi bi-plus-circle me-1"}),
+                                        "Add person",
+                                    ),
+                                ),
+                                *person_rows,
+                            ),
+
+                            # ---- File picker ----
+                            html.div(
+                                {"class": "mb-4"},
+                                html.label(
+                                    {"class": "form-label fw-semibold", "for": "flat-file"},
+                                    "Select history file (.txt or .csv)",
+                                ),
                                 html.input({
-                                    "id": "flat-file",
-                                    "type": "file",
-                                    "name": "file",
-                                    "accept": ".txt,.csv,text/plain,text/csv",
-                                    "class": "form-control form-control-lg",
+                                    "id":       "flat-file",
+                                    "type":     "file",
+                                    "name":     "file",
+                                    "accept":   ".txt,.csv,text/plain,text/csv",
+                                    "class":    "form-control form-control-lg",
                                     "required": True,
                                 }),
                             ),
+
                             html.button(
                                 {"type": "submit", "class": "btn btn-primary btn-lg w-100"},
                                 html.i({"class": "bi bi-cloud-upload me-2"}),
@@ -271,11 +347,12 @@ def _FlatReviewStep(user: dict, import_id: str, on_navigate):
     Shows row counts and totals per person + top categories.
     User confirms to bulk-insert everything, or cancels.
     """
-    summary, set_summary = hooks.use_state(None)
+    summary,      set_summary      = hooks.use_state(None)
     transactions, set_transactions = hooks.use_state([])
-    saving, set_saving = hooks.use_state(False)
-    done, set_done = hooks.use_state(False)
-    error, set_error = hooks.use_state("")
+    users_list,   set_users_list   = hooks.use_state([])
+    saving,       set_saving       = hooks.use_state(False)
+    done,         set_done         = hooks.use_state(False)
+    error,        set_error        = hooks.use_state("")
 
     @hooks.use_effect(dependencies=[import_id])
     async def load_summary():
@@ -285,6 +362,11 @@ def _FlatReviewStep(user: dict, import_id: str, on_navigate):
             txs = data.get("transactions", [])
             set_transactions(txs)
             set_summary(summarise(txs))
+        try:
+            ul = await get_all_users()
+            set_users_list(ul)
+        except Exception:
+            pass
 
     async def confirm(_event):
         set_saving(True)
@@ -421,7 +503,7 @@ def _FlatReviewStep(user: dict, import_id: str, on_navigate):
                                 html.span(
                                     {"style": {"fontSize": "0.875rem"}},
                                     html.i({"class": "bi bi-person-circle me-2 text-muted"}),
-                                    email,
+                                    _display_name(email, users_list),
                                 ),
                                 html.span(
                                     {"class": "text-end"},
@@ -486,7 +568,7 @@ def _FlatReviewStep(user: dict, import_id: str, on_navigate):
                                     {"style": {"fontSize": "0.8rem", "maxWidth": "140px",
                                                "overflow": "hidden", "textOverflow": "ellipsis",
                                                "whiteSpace": "nowrap"}},
-                                    tx["user_email"],
+                                    _display_name(tx["user_email"], users_list),
                                 ),
                                 html.td(html.span({"class": "badge bg-light text-dark"},
                                                   tx["category"])),

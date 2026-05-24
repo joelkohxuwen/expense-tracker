@@ -15,7 +15,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -212,33 +212,47 @@ async def import_csv_endpoint(request: Request, file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/import-flat")
-async def import_flat_endpoint(
-    request: Request,
-    file: UploadFile = File(...),
-    initial_j: str = Form(""),
-    initial_e: str = Form(""),
-):
+async def import_flat_endpoint(request: Request):
     """
     Parse a pipe-delimited expense history file, map person initials to
     email addresses, and store for the ReactPy review/confirm page.
 
-    Form fields:
-      file       — the uploaded .txt / .csv history file
-      initial_j  — email for person with initial "J"
-      initial_e  — email for person with initial "E"
+    Form fields (dynamic — any number of people):
+      file        — the uploaded .txt / .csv history file
+      initial_0   — person 0 initial  (e.g. "J")
+      email_0     — person 0 email    (e.g. "joel@gmail.com")
+      initial_1   — person 1 initial
+      email_1     — person 1 email
+      ...
     """
     user = get_user_from_request(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    raw_bytes = await file.read()
-    text = raw_bytes.decode("utf-8", errors="replace")
+    form = await request.form()
 
-    # Build the initial → email mapping; fall back to current user for "J"
-    initial_map: dict[str, str] = {
-        "J": initial_j.strip() or user["email"],
-        "E": initial_e.strip() or "e@family",
-    }
+    # Get the uploaded file from the form data
+    file_field = form.get("file")
+    if file_field is None or not hasattr(file_field, "read"):
+        return RedirectResponse(url="/?page=import&error=no_file", status_code=302)
+
+    raw_bytes = await file_field.read()
+    text = raw_bytes.decode("utf-8", errors="replace")
+    filename: str = getattr(file_field, "filename", None) or "history.txt"
+
+    # Build initial → email mapping from dynamic initial_N / email_N fields
+    initial_map: dict[str, str] = {}
+    for i in range(20):  # generous upper bound
+        initial = str(form.get(f"initial_{i}", "")).strip()
+        email_val = str(form.get(f"email_{i}", "")).strip()
+        if not initial and not email_val:
+            break
+        if initial:
+            initial_map[initial.upper()] = email_val or f"{initial.lower()}@family"
+
+    # Fallback: map "J" to current user if nothing was submitted
+    if not initial_map:
+        initial_map = {"J": user["email"]}
 
     transactions = parse_flat_file(text, initial_map)
     if not transactions:
@@ -248,7 +262,7 @@ async def import_flat_endpoint(
     import_sessions[import_id] = {
         "transactions": transactions,
         "user_email":   user["email"],
-        "filename":     file.filename or "history.txt",
+        "filename":     filename,
         "type":         "flat",   # signals ImportPage to use _FlatReviewStep
     }
 

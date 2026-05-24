@@ -2,7 +2,7 @@
 Expenses page component.
 
 Full expense list with:
-  - Month/category/user filters
+  - Month/category/person filters (person filter shows real names)
   - Edit and delete actions
   - Add expense form (reuses ExpenseForm)
 
@@ -15,8 +15,26 @@ from datetime import datetime
 
 from reactpy import component, html, hooks
 
-from database.sheets import get_expenses, get_categories, add_expense, delete_expense, update_expense
+from database.sheets import (
+    get_expenses, get_categories, get_all_users,
+    add_expense, delete_expense, update_expense,
+)
 from components.expense_form import ExpenseForm
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _display_name(email: str, users: list) -> str:
+    """Return the first name for a user email, falling back to the email prefix."""
+    for u in users:
+        if u.get("email") == email:
+            n = u.get("name", "").strip()
+            if n:
+                return n.split()[0]
+            break
+    return email.split("@")[0].capitalize()
 
 
 def _months_options(expenses: list[dict]) -> list[str]:
@@ -29,37 +47,40 @@ def _months_options(expenses: list[dict]) -> list[str]:
     return sorted(months, reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Expenses page
+# ---------------------------------------------------------------------------
+
 @component
 def ExpensesPage(user: dict, on_navigate):
     """
     Full paginated expense list with filters and inline edit/delete.
-
-    ReactPy pattern: controlled filter state.
-    Three use_state variables hold the active filter values. The filtered
-    list is derived synchronously on every render — no extra effect needed.
     """
-    expenses, set_expenses = hooks.use_state(None)
-    categories, set_categories = hooks.use_state([])
-    loading, set_loading = hooks.use_state(True)
+    expenses,    set_expenses    = hooks.use_state(None)
+    categories,  set_categories  = hooks.use_state([])
+    users_list,  set_users_list  = hooks.use_state([])
+    loading,     set_loading     = hooks.use_state(True)
     refresh_key, set_refresh_key = hooks.use_state(0)
 
-    # Filters
-    filter_month, set_filter_month = hooks.use_state("")
+    # Filters — person filter value is a full email address
+    filter_month,    set_filter_month    = hooks.use_state("")
     filter_category, set_filter_category = hooks.use_state("")
-    filter_user, set_filter_user = hooks.use_state("")
+    filter_user,     set_filter_user     = hooks.use_state("")
 
     # Form/edit state
-    show_add_form, set_show_add_form = hooks.use_state(False)
-    editing_id, set_editing_id = hooks.use_state(None)
+    show_add_form,     set_show_add_form     = hooks.use_state(False)
+    editing_id,        set_editing_id        = hooks.use_state(None)
     confirm_delete_id, set_confirm_delete_id = hooks.use_state(None)
 
     @hooks.use_effect(dependencies=[refresh_key])
     async def load_data():
         set_loading(True)
-        all_exp = await get_expenses(user_email=None)
-        cats = await get_categories()
+        all_exp   = await get_expenses(user_email=None)
+        cats      = await get_categories()
+        user_list = await get_all_users()
         set_expenses(all_exp)
         set_categories(cats)
+        set_users_list(user_list)
         set_loading(False)
 
     async def handle_add(expense: dict):
@@ -80,8 +101,16 @@ def ExpensesPage(user: dict, on_navigate):
 
     # ---- Derive filtered list -----------------------------------------------
     all_expenses = expenses or []
-    users = sorted({e.get("user_email", "").split("@")[0] for e in all_expenses if e.get("user_email")})
     months = _months_options(all_expenses)
+
+    # Person filter options: (email, display_name) sorted by display name
+    unique_emails = sorted(
+        {e.get("user_email", "") for e in all_expenses if e.get("user_email")}
+    )
+    person_options = [
+        (em, _display_name(em, users_list))
+        for em in unique_emails
+    ]
 
     filtered = all_expenses
     if filter_month:
@@ -89,18 +118,27 @@ def ExpensesPage(user: dict, on_navigate):
     if filter_category:
         filtered = [e for e in filtered if e.get("category", "") == filter_category]
     if filter_user:
-        filtered = [e for e in filtered if filter_user in e.get("user_email", "")]
+        filtered = [e for e in filtered if e.get("user_email", "") == filter_user]
 
-    total_filtered = sum(float(e.get("amount", 0)) for e in filtered if e.get("amount"))
+    total_filtered = sum(
+        float(e.get("amount", 0)) for e in filtered if e.get("amount")
+    )
 
     # ---- Render -------------------------------------------------------------
     return html.div(
         # Page header
         html.div(
             {"class": "d-flex justify-content-between align-items-center mb-4"},
-            html.h3({"class": "mb-0 fw-bold"}, html.i({"class": "bi bi-list-ul me-2"}), "All Expenses"),
+            html.h3(
+                {"class": "mb-0 fw-bold"},
+                html.i({"class": "bi bi-list-ul me-2"}),
+                "All Expenses",
+            ),
             html.button(
-                {"class": "btn btn-primary", "onClick": lambda _: set_show_add_form(not show_add_form)},
+                {
+                    "class": "btn btn-primary",
+                    "onClick": lambda _: set_show_add_form(not show_add_form),
+                },
                 html.i({"class": f"bi bi-{'x-lg' if show_add_form else 'plus-lg'} me-2"}),
                 "Cancel" if show_add_form else "Add Expense",
             ),
@@ -124,9 +162,9 @@ def ExpensesPage(user: dict, on_navigate):
                 {"class": "card-body py-3"},
                 html.div(
                     {"class": "row g-2 align-items-end"},
-                    _filter_select("Month", months, filter_month, set_filter_month, "All months"),
-                    _filter_select("Category", categories, filter_category, set_filter_category, "All categories"),
-                    _filter_select("Person", users, filter_user, set_filter_user, "All people"),
+                    _filter_select("Month",    months,          filter_month,    set_filter_month,    "All months"),
+                    _filter_select("Category", categories,      filter_category, set_filter_category, "All categories"),
+                    _filter_select("Person",   person_options,  filter_user,     set_filter_user,     "All people"),
                     html.div(
                         {"class": "col-auto"},
                         html.button(
@@ -185,6 +223,7 @@ def ExpensesPage(user: dict, on_navigate):
                                 _expense_table_row(
                                     expense=e,
                                     categories=categories,
+                                    users=users_list,
                                     user_email=user["email"],
                                     is_editing=editing_id == e.get("id"),
                                     is_confirming_delete=confirm_delete_id == e.get("id"),
@@ -197,7 +236,12 @@ def ExpensesPage(user: dict, on_navigate):
                                 )
                                 for e in filtered
                             ] if filtered else [
-                                html.tr(html.td({"colspan": "7", "class": "text-center text-muted py-5"}, "No expenses match your filters."))
+                                html.tr(
+                                    html.td(
+                                        {"colspan": "7", "class": "text-center text-muted py-5"},
+                                        "No expenses match your filters.",
+                                    )
+                                )
                             ]
                         ),
                     ),
@@ -207,8 +251,18 @@ def ExpensesPage(user: dict, on_navigate):
     )
 
 
+# ---------------------------------------------------------------------------
+# Filter select (handles plain strings or (value, label) tuples)
+# ---------------------------------------------------------------------------
+
 @component
 def _filter_select(label: str, options: list, value: str, on_change, placeholder: str):
+    def _val(opt):
+        return opt[0] if isinstance(opt, (list, tuple)) else opt
+
+    def _lbl(opt):
+        return opt[1] if isinstance(opt, (list, tuple)) else opt
+
     return html.div(
         {"class": "col-auto"},
         html.label({"class": "form-label mb-1", "style": {"fontSize": "0.8rem"}}, label),
@@ -219,15 +273,20 @@ def _filter_select(label: str, options: list, value: str, on_change, placeholder
                 "onChange": lambda e: on_change(e["target"]["value"]),
             },
             html.option({"value": ""}, placeholder),
-            *[html.option({"value": opt}, opt) for opt in options],
+            *[html.option({"value": _val(opt)}, _lbl(opt)) for opt in options],
         ),
     )
 
+
+# ---------------------------------------------------------------------------
+# Expense table row
+# ---------------------------------------------------------------------------
 
 @component
 def _expense_table_row(
     expense: dict,
     categories: list,
+    users: list,
     user_email: str,
     is_editing: bool,
     is_confirming_delete: bool,
@@ -240,7 +299,7 @@ def _expense_table_row(
 ):
     source_badge = {
         "manual": ("success", "Manual"),
-        "import": ("info", "Imported"),
+        "import": ("info",    "Imported"),
     }.get(expense.get("source", "manual"), ("secondary", "?"))
 
     if is_editing:
@@ -263,42 +322,63 @@ def _expense_table_row(
     if is_confirming_delete:
         return html.tr(
             {"class": "table-danger"},
-            html.td({"colspan": "5"}, f"Delete \"{expense.get('description', '')}\"? This cannot be undone."),
+            html.td(
+                {"colspan": "5"},
+                f"Delete \"{expense.get('description', '')}\"? This cannot be undone.",
+            ),
             html.td(
                 {"class": "text-end", "colspan": "2"},
                 html.button(
-                    {"class": "btn btn-danger btn-sm me-2", "onClick": lambda _: on_delete_confirm()},
+                    {
+                        "class": "btn btn-danger btn-sm me-2",
+                        "onClick": lambda _: on_delete_confirm(),
+                    },
                     "Yes, Delete",
                 ),
                 html.button(
-                    {"class": "btn btn-outline-secondary btn-sm", "onClick": lambda _: on_delete_cancel()},
+                    {
+                        "class": "btn btn-outline-secondary btn-sm",
+                        "onClick": lambda _: on_delete_cancel(),
+                    },
                     "Cancel",
                 ),
             ),
         )
 
+    person_name = _display_name(expense.get("user_email", ""), users)
+
     return html.tr(
         html.td({"style": {"fontSize": "0.875rem"}}, expense.get("date", "—")),
         html.td(
-            html.div({"class": "fw-semibold", "style": {"fontSize": "0.875rem", "maxWidth": "240px"}},
-                     expense.get("description", "—")),
+            html.div(
+                {"class": "fw-semibold", "style": {"fontSize": "0.875rem", "maxWidth": "240px"}},
+                expense.get("description", "—"),
+            ),
             html.small({"class": "text-muted"}, expense.get("notes", "") or ""),
         ),
         html.td(html.span({"class": "badge bg-light text-dark"}, expense.get("category", "Other"))),
-        html.td({"style": {"fontSize": "0.875rem"}}, expense.get("user_email", "").split("@")[0]),
+        html.td({"style": {"fontSize": "0.875rem"}}, person_name),
         html.td(html.span({"class": f"badge bg-{source_badge[0]}"}, source_badge[1])),
-        html.td({"class": "text-end fw-semibold text-danger"},
-                f"${float(expense.get('amount', 0)):,.2f}"),
+        html.td(
+            {"class": "text-end fw-semibold text-danger"},
+            f"${float(expense.get('amount', 0)):,.2f}",
+        ),
         html.td(
             {"class": "text-end"},
             html.button(
-                {"class": "btn btn-sm btn-outline-secondary me-1", "onClick": lambda _: on_edit_start(),
-                 "title": "Edit"},
+                {
+                    "class": "btn btn-sm btn-outline-secondary me-1",
+                    "onClick": lambda _: on_edit_start(),
+                    "title": "Edit",
+                },
                 html.i({"class": "bi bi-pencil"}),
             ),
             html.button(
-                {"class": "btn btn-sm btn-outline-danger", "onClick": lambda _: on_delete_start(),
-                 "title": "Delete"},
+                {
+                    "class": "btn btn-sm btn-outline-danger",
+                    "onClick": lambda _: on_delete_start(),
+                    "title": "Delete",
+                },
                 html.i({"class": "bi bi-trash"}),
             ),
         ),
