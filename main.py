@@ -15,7 +15,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -29,6 +29,7 @@ from config import BASE_URL, DEBUG, SECRET_KEY
 from database.sheets import ensure_sheets, get_expenses, get_or_create_user
 from utils.csv_parser import parse_csv
 from utils.deduplicator import find_duplicates
+from utils.flat_file_parser import parse_flat_file
 
 # ---------------------------------------------------------------------------
 # Shared in-memory store for pending CSV import sessions.
@@ -198,6 +199,57 @@ async def import_csv_endpoint(request: Request, file: UploadFile = File(...)):
         "transactions": transactions,
         "user_email": user["email"],
         "filename": file.filename or "uploaded.csv",
+    }
+
+    return RedirectResponse(
+        url=f"/?page=import&import_id={import_id}",
+        status_code=302,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flat-file history import
+# ---------------------------------------------------------------------------
+
+@app.post("/api/import-flat")
+async def import_flat_endpoint(
+    request: Request,
+    file: UploadFile = File(...),
+    initial_j: str = Form(""),
+    initial_e: str = Form(""),
+):
+    """
+    Parse a pipe-delimited expense history file, map person initials to
+    email addresses, and store for the ReactPy review/confirm page.
+
+    Form fields:
+      file       — the uploaded .txt / .csv history file
+      initial_j  — email for person with initial "J"
+      initial_e  — email for person with initial "E"
+    """
+    user = get_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    raw_bytes = await file.read()
+    text = raw_bytes.decode("utf-8", errors="replace")
+
+    # Build the initial → email mapping; fall back to current user for "J"
+    initial_map: dict[str, str] = {
+        "J": initial_j.strip() or user["email"],
+        "E": initial_e.strip() or "e@family",
+    }
+
+    transactions = parse_flat_file(text, initial_map)
+    if not transactions:
+        return RedirectResponse(url="/?page=import&error=no_transactions_parsed", status_code=302)
+
+    import_id = str(uuid.uuid4())
+    import_sessions[import_id] = {
+        "transactions": transactions,
+        "user_email":   user["email"],
+        "filename":     file.filename or "history.txt",
+        "type":         "flat",   # signals ImportPage to use _FlatReviewStep
     }
 
     return RedirectResponse(
