@@ -12,6 +12,7 @@ ReactPy handles everything else:
   WebSocket endpoint that drives the reactive UI.
 """
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -42,9 +43,21 @@ import_sessions: dict = {}
 set_import_sessions_ref(import_sessions)
 
 # ---------------------------------------------------------------------------
+# Lifespan (replaces deprecated on_event)
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Ensure the required Google Sheets tabs exist before taking traffic."""
+    await ensure_sheets()
+    yield   # server is running
+    # (nothing to clean up on shutdown)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Family Expense Tracker")
+app = FastAPI(title="Family Expense Tracker", lifespan=lifespan)
 
 # SessionMiddleware stores OAuth state (CSRF nonce) in a signed cookie.
 # https_only=False in debug so http://localhost works without TLS.
@@ -55,15 +68,13 @@ app.add_middleware(
     same_site="lax",
 )
 
-
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Ensure the required Google Sheets tabs exist before taking traffic."""
-    await ensure_sheets()
+# ReactPy's Starlette backend calls app.add_websocket_route(), which was
+# removed in Starlette 1.1 / FastAPI 0.100+. This one-line shim restores it.
+if not hasattr(app, "add_websocket_route"):
+    from starlette.routing import WebSocketRoute
+    app.add_websocket_route = lambda path, route, **kw: app.router.routes.append(
+        WebSocketRoute(path, route)
+    )
 
 
 # ---------------------------------------------------------------------------

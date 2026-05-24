@@ -55,7 +55,15 @@ def _get_client() -> gspread.Client:
 
 
 def _get_spreadsheet() -> gspread.Spreadsheet:
-    return _get_client().open(SPREADSHEET_NAME)
+    client = _get_client()
+    try:
+        return client.open(SPREADSHEET_NAME)
+    except gspread.exceptions.SpreadsheetNotFound:
+        # Sheet not shared with service account yet — create a new one.
+        # The user can either share their existing sheet (then delete this one)
+        # or use the auto-created sheet.
+        print(f"[sheets] '{SPREADSHEET_NAME}' not found — creating a new spreadsheet.")
+        return client.create(SPREADSHEET_NAME)
 
 
 def _rows_to_dicts(rows: list[list]) -> list[dict]:
